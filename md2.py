@@ -1,8 +1,20 @@
 import sys
+import itertools
 
 BLOCK_SIZE = 16
 S = [1, 3, 0, 2]
 
+def strToIntList(str):
+    tmp = str.split()
+    lst = []
+    for item in tmp:
+        lst.append(int(item))
+    return lst
+
+def generateAllPossibleVariants(num):
+    values = [0, 1, 2, 3]
+    return list(itertools.product(values, repeat = num))
+    
 def pad(buf):
     padLength = BLOCK_SIZE - (len(buf) % BLOCK_SIZE)
     for i in range(padLength):
@@ -69,9 +81,11 @@ def preimage(H_cur, H_next):
             A[i][j] = A[i+1][j] ^ S[A[i+1][j-1]]
         k = k + 1
 
+
+    counter = 0
+
     # Fixing C[1][15] 
     for val in range(4):
-        print()
         C[1][15] = val
 
         # Dealing with second row of A
@@ -91,43 +105,111 @@ def preimage(H_cur, H_next):
         for i in range(2, 5):
             sboxValue = (A[i][0] ^ A[i+1][0])
             C[i][15] = (S.index(sboxValue) - i + 4 ) % 4
-        
-        
 
+        # Fixing B[1][15] - B[4][15]
+        B_values = generateAllPossibleVariants(4)
+        for val in B_values:
 
+            print("#############################################################################################################################")
+            print(counter)
+            counter = counter + 1
 
+            for i in range(1, 5):
+                B[i][15] = val[i - 1]
+
+            T = {} # key: (B[1][7]-B[4][7], C[1][7]-C[4][7]), value: ["a"/"b"/"c", L/R half of message, ...] b - only Left parts result in key,
+                   #                                                                                         c - only Right parts,
+                   #                                                                                         a - left and right parts produce the key.
+
+            B_0_values = generateAllPossibleVariants(8)
+
+            for val_ in B_0_values:
+
+                ########## Fixing B[0][0] - B[0][7] ##########
+                for i in range(8):
+                    B[0][i] = val_[i]
+                
+                # Defining C[0][1] - C[0][7]
+                for i in range(8):
+                    C[0][i] = B[0][i] ^ A[0][i]
+
+                # Computing B[1][7] - B[4][7]
+                for i in range(1, 5):
+                    t = A[i][15]
+                    for j in range(8):
+                        B[i][j] = B[i - 1][j] ^ S[t]
+                        t = B[i][j]
+
+                # Computing C[1][7] - C[4][7]
+                for i in range(1, 5):
+                    t = B[i][15]
+                    for j in range(8):
+                        C[i][j] = C[i - 1][j] ^ S[t]
+                        t = C[i][j]
+
+                # Filling in T_1
+                T_1_value = []
+                for i in range(1,5):
+                    T_1_value.append(B[i][7])
+                for i in range(1,5):
+                    T_1_value.append(C[i][7])
+
+                key_1 = str(T_1_value)
+
+                if( not(key_1 in T) ):
+                    T[key_1] = ["b"]
+                elif( T[key_1][0] == "c" ):
+                    T[key_1][0] = "a"
+                T[key_1].append("L" + str(val_))
 
                 
-        
-        
-        
+                ########## Fixing B[0][8] - B[0][15] ##########
+                for i in range(8, 16):
+                    B[0][i] = val_[i - 8]
 
+                # Defining C[0][8] - C[0][15]
+                for i in range(8, 16):
+                    C[0][i] = B[0][i] ^ A[0][i]
 
-    
+                # Computing B[1][7] - B[4][7]
+                for i in range(1, 5):
+                    for j in reversed(range(8, 16)):
+                        sboxValue= B[i][j] ^ B[i-1][j]
+                        B[i][j-1] = S.index(sboxValue)
 
+                # Computing C[1][7] - C[4][7]
+                for i in range(1, 5):
+                    for j in reversed(range(8, 16)):
+                        sboxValue= C[i][j] ^ C[i-1][j]
+                        C[i][j-1] = S.index(sboxValue)
 
+                # Filling in T_2
+                T_2_value = []
+                for i in range(1,5):
+                    T_2_value.append(B[i][7])
+                for i in range(1,5):
+                    T_2_value.append(C[i][7])
 
-    
+                key_2 = str(T_2_value)
 
+                if( not(key_2 in T) ):
+                    T[key_2] = ["c"]
+                elif (T[key_2][0] == "b"):
+                    T[key_2][0] = "a"
+                
+                T[key_2].append("R" + str(val_))
 
-
-
-
-
-
-
-
-
-
-
-def strToIntList(str):
-    tmp = str.split()
-    lst = []
-    for item in tmp:
-        lst.append(int(item))
-    return lst
-
-
+                
+            ########## Sorting the table alphabetically by value ##########
+            for item in sorted(T.items(), key = lambda x: x[1][0], reverse = False):
+                # print(item)
+                # print(item[1][0])
+                if (item[1][0] == "a"):
+                    print(item)
+                    return
+                else: # запустить внешний цикл со следующим значением
+                    break
+                
 
 if (__name__ == "__main__"):
 
@@ -150,6 +232,7 @@ if (__name__ == "__main__"):
         H_next = strToIntList(sys.argv[3])
        # print(' '.join(map(str, preimage(H_cur, H_next))))
         preimage(H_cur, H_next)
+        
         
     
     
