@@ -1,5 +1,6 @@
 import sys
 import itertools
+import copy
 
 BLOCK_SIZE = 16
 S = [1, 3, 0, 2]
@@ -60,6 +61,23 @@ def compress(H, M):
         X[i] = H[i]
     return F(M,X)[:16]
 
+def check(lst, H_cur, H_next):
+    print("checking")
+    leftHalves = []
+    rightHalves = []
+    for item in lst:
+        if(item[0] == "L"):
+            leftHalves.append(strToIntList(item[2:24].replace(",", "")))
+        elif(item[0] == "R"):
+            rightHalves.append(strToIntList(item[2:24].replace(",", "")))
+    for left in leftHalves:
+        for right in rightHalves:
+            msg = left + right
+            if(H_next == compress(H_cur, msg)):
+                return True, msg
+
+    return False, []
+
 def preimage(H_cur, H_next):
     A = [[-1 for i in range(BLOCK_SIZE)] for j in range(19)]
     B = [[-1 for i in range(BLOCK_SIZE)] for j in range(5)]
@@ -76,20 +94,25 @@ def preimage(H_cur, H_next):
 
     # Computing lower right triangle of A
     k = 1
-    for i in reversed(range(2,18)):
+    for i in reversed(range(3,18)):
         for j in range(k, BLOCK_SIZE):
             A[i][j] = A[i+1][j] ^ S[A[i+1][j-1]]
         k = k + 1
 
-
+    # print("triangle A")
+    # for item in A:
+    #     print(item)
+    # print(A[18][15]," ",A[18][14]," ", A[18][15] ^ S[A[18][14]] )
+    
     counter = 0
 
     # Fixing C[1][15] 
     for val in range(4):
         C[1][15] = val
+        print("C[1][15] = ", C[1][15])
 
         # Dealing with second row of A
-        t = (C[1][15] + 1) % 4
+        t = C[1][15]
         for i in range(BLOCK_SIZE):
             A[2][i] = A[1][i] ^ S[t]
             t = A[2][i]
@@ -97,38 +120,52 @@ def preimage(H_cur, H_next):
         # The last part of A
         k = 16
         for i in range(3, 18):
-            for j in reversed(range(k)):
-               sboxValue= A[i][j] ^ A[i-1][j]
-               A[i][j-1] = S.index(sboxValue)
+            for j in reversed(range(1, k)):
+                sboxValue= A[i][j] ^ A[i-1][j]
+                A[i][j-1] = S.index(sboxValue)
+            k = k - 1
+        
+        # print("A:")
+        # for item in A:
+        #     print(item)
+        # print()
 
         # Defining right column of C
         for i in range(2, 5):
             sboxValue = (A[i][0] ^ A[i+1][0])
-            C[i][15] = (S.index(sboxValue) - i + 4 ) % 4
+            C[i][15] = (S.index(sboxValue) - (i - 1) + 4 ) % 4
+
+        # print("C:")
+        # for item in C:
+        #     print(item)
+        # print()
 
         # Fixing B[1][15] - B[4][15]
         B_values = generateAllPossibleVariants(4)
+        # B_values = [(1,3,2,1)]
         for val in B_values:
 
-            print("#############################################################################################################################")
+            print("##########################################################################")
             print(counter)
             counter = counter + 1
+
+            print("B[1][15] - B[4][15] = ", val)
 
             for i in range(1, 5):
                 B[i][15] = val[i - 1]
 
             T = {} # key: (B[1][7]-B[4][7], C[1][7]-C[4][7]), value: ["a"/"b"/"c", L/R half of message, ...] b - only Left parts result in key,
-                   #                                                                                         c - only Right parts,
-                   #                                                                                         a - left and right parts produce the key.
+                    #                                                                                         c - only Right parts,
+                    #                                                                                         a - left and right parts produce the key.
 
             B_0_values = generateAllPossibleVariants(8)
-
+            # B_0_values = [(1, 2, 0, 2, 3, 1, 0, 2), (0, 3, 3, 0, 1, 1, 2, 0)]
             for val_ in B_0_values:
 
                 ########## Fixing B[0][0] - B[0][7] ##########
                 for i in range(8):
                     B[0][i] = val_[i]
-                
+
                 # Defining C[0][1] - C[0][7]
                 for i in range(8):
                     C[0][i] = B[0][i] ^ A[0][i]
@@ -162,6 +199,15 @@ def preimage(H_cur, H_next):
                     T[key_1][0] = "a"
                 T[key_1].append("L" + str(val_))
 
+                # print("B:")
+                # for item in B:
+                #     print(item)
+                # print()
+
+                # print("C:")
+                # for item in C:
+                #     print(item)
+                # print()
                 
                 ########## Fixing B[0][8] - B[0][15] ##########
                 for i in range(8, 16):
@@ -182,7 +228,7 @@ def preimage(H_cur, H_next):
                     for j in reversed(range(8, 16)):
                         sboxValue= C[i][j] ^ C[i-1][j]
                         C[i][j-1] = S.index(sboxValue)
-
+                
                 # Filling in T_2
                 T_2_value = []
                 for i in range(1,5):
@@ -199,17 +245,26 @@ def preimage(H_cur, H_next):
                 
                 T[key_2].append("R" + str(val_))
 
-                
-            ########## Sorting the table alphabetically by value ##########
-            for item in sorted(T.items(), key = lambda x: x[1][0], reverse = False):
-                # print(item)
-                # print(item[1][0])
-                if (item[1][0] == "a"):
-                    print(item)
-                    return
-                else: # запустить внешний цикл со следующим значением
-                    break
-                
+                # print("B:")
+                # for item in B:
+                #     print(item)
+                # print()
+
+                # print("C:")
+                # for item in C:
+                #     print(item)
+                # print()
+
+        
+            for item in T:
+                if (T[item][0] == "a"):
+                    # print(item, T[item])
+                    result, preimage = check(T[item], H_cur, H_next)
+                    if(result):
+                        return preimage
+
+
+               
 
 if (__name__ == "__main__"):
 
@@ -230,8 +285,8 @@ if (__name__ == "__main__"):
     if(mode == "preimage"):
         H_cur = strToIntList(sys.argv[2])
         H_next = strToIntList(sys.argv[3])
-       # print(' '.join(map(str, preimage(H_cur, H_next))))
-        preimage(H_cur, H_next)
+        print(' '.join(map(str, preimage(H_cur, H_next))))
+       
         
         
     
