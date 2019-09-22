@@ -1,6 +1,7 @@
 import sys
 import itertools
-import copy
+from multiprocessing import Pool
+import time
 
 BLOCK_SIZE = 16
 S = [1, 3, 0, 2]
@@ -14,7 +15,7 @@ def strToIntList(str):
 
 def generateAllPossibleVariants(num):
     values = [0, 1, 2, 3]
-    return list(itertools.product(values, repeat = num))
+    return itertools.product(values, repeat = num)
     
 def pad(buf):
     padLength = BLOCK_SIZE - (len(buf) % BLOCK_SIZE)
@@ -56,33 +57,27 @@ def md2(m):
     return X[:16]
 
 def compress(H, M):
-    X = [0] * 3 * BLOCK_SIZE
+    X = [0] * (3 * BLOCK_SIZE)
     for i in range(16):
         X[i] = H[i]
     return F(M,X)[:16]
 
-def check(lst, H_cur, H_next):
-    print("checking")
-    leftHalves = []
-    rightHalves = []
-    for item in lst:
-        if(item[0] == "L"):
-            leftHalves.append(strToIntList(item[2:24].replace(",", "")))
-        elif(item[0] == "R"):
-            rightHalves.append(strToIntList(item[2:24].replace(",", "")))
-    for left in leftHalves:
-        for right in rightHalves:
+def check(Halves, H_cur, H_next):    
+    for left in Halves[0]:
+        for right in Halves[1]:
             msg = left + right
             if(H_next == compress(H_cur, msg)):
-                return True, msg
+                return msg
+    return None
 
-    return False, []
-
-def preimage(H_cur, H_next):
-    A = [[-1 for i in range(BLOCK_SIZE)] for j in range(19)]
-    B = [[-1 for i in range(BLOCK_SIZE)] for j in range(5)]
-    C = [[-1 for i in range(BLOCK_SIZE)] for j in range(5)]
-
+def checkThisTable(T,H_cur,H_next):
+    for item in T:
+        if (len(item[0]) > 0) and (len(item[1]) > 0):
+            preimage = check(item, H_cur, H_next)
+            if(preimage):
+                return preimage
+        
+def compute_A(A, H_cur, H_next, C_1_15):
     A[0] = H_cur[:]
     A[18] = H_next[:]
 
@@ -97,174 +92,155 @@ def preimage(H_cur, H_next):
     for i in reversed(range(3,18)):
         for j in range(k, BLOCK_SIZE):
             A[i][j] = A[i+1][j] ^ S[A[i+1][j-1]]
-        k = k + 1
+        k += 1
 
-    # print("triangle A")
-    # for item in A:
-    #     print(item)
-    # print(A[18][15]," ",A[18][14]," ", A[18][15] ^ S[A[18][14]] )
+    # Dealing with second row of A
+    t = C_1_15
+    for i in range(BLOCK_SIZE):
+        A[2][i] = A[1][i] ^ S[t]
+        t = A[2][i]
+
+    # The last part of A
+    k = 16
+    for i in range(3, 18):
+        for j in reversed(range(1, k)):
+            sboxValue= A[i][j] ^ A[i-1][j]
+            A[i][j-1] = S.index(sboxValue)
+        k -= 1    
+
+def defineRightCol_C(C, A):
+    # Defining right column of C
+    for i in range(2, 5):
+        sboxValue = (A[i][0] ^ A[i+1][0])
+        C[i][15] = (S.index(sboxValue) - (i - 1) + 4 ) % 4
     
-    counter = 0
+def leftPart(val, A, B, C, T):
+    # Fixing B[0][0] - B[0][7] 
+    for i in range(8):
+        B[0][i] = val[i]
 
-    # Fixing C[1][15] 
-    for val in range(4):
-        C[1][15] = val
-        print("C[1][15] = ", C[1][15])
+    # Defining C[0][1] - C[0][7]
+    for i in range(8):
+        C[0][i] = B[0][i] ^ A[0][i]
 
-        # Dealing with second row of A
-        t = C[1][15]
-        for i in range(BLOCK_SIZE):
-            A[2][i] = A[1][i] ^ S[t]
-            t = A[2][i]
+    # Computing B[1][7] - B[4][7]
+    for i in range(1, 5):
+        t = A[i][15]
+        for j in range(8):
+            B[i][j] = B[i - 1][j] ^ S[t]
+            t = B[i][j]
 
-        # The last part of A
-        k = 16
-        for i in range(3, 18):
-            for j in reversed(range(1, k)):
-                sboxValue= A[i][j] ^ A[i-1][j]
-                A[i][j-1] = S.index(sboxValue)
-            k = k - 1
-        
-        # print("A:")
-        # for item in A:
-        #     print(item)
-        # print()
+    # Computing C[1][7] - C[4][7]
+    for i in range(1, 5):
+        t = B[i][15]
+        for j in range(8):
+            C[i][j] = C[i - 1][j] ^ S[t]
+            t = C[i][j]
 
-        # Defining right column of C
-        for i in range(2, 5):
-            sboxValue = (A[i][0] ^ A[i+1][0])
-            C[i][15] = (S.index(sboxValue) - (i - 1) + 4 ) % 4
+    # Filling in T_1
+    T_1_value = []
+    for i in range(1,5):
+        T_1_value.append(B[i][7])
+    for i in range(1,5):
+        T_1_value.append(C[i][7])
+    key_1 = str(T_1_value)
+    if( not (key_1 in T) ):
+        T[key_1] = ([val],[])
+    else:
+        T[key_1][0].append(val)
 
-        # print("C:")
-        # for item in C:
-        #     print(item)
-        # print()
+def rightPart(val, A, B, C, T):
+    # Fixing B[0][8] - B[0][15] 
+    for i in range(8, 16):
+        B[0][i] = val[i - 8]
 
-        # Fixing B[1][15] - B[4][15]
-        B_values = generateAllPossibleVariants(4)
-        # B_values = [(1,3,2,1)]
-        for val in B_values:
+    # Defining C[0][8] - C[0][15]
+    for i in range(8, 16):
+        C[0][i] = B[0][i] ^ A[0][i]
 
-            print("##########################################################################")
-            print(counter)
-            counter = counter + 1
+    # Computing B[1][7] - B[4][7]
+    for i in range(1, 5):
+        for j in reversed(range(8, 16)):
+            sboxValue= B[i][j] ^ B[i-1][j]
+            B[i][j-1] = S.index(sboxValue)
 
-            print("B[1][15] - B[4][15] = ", val)
+    # Computing C[1][7] - C[4][7]
+    for i in range(1, 5):
+        for j in reversed(range(8, 16)):
+            sboxValue= C[i][j] ^ C[i-1][j]
+            C[i][j-1] = S.index(sboxValue)
+    
+    # Filling in T_2
+    T_2_value = []
+    for i in range(1,5):
+        T_2_value.append(B[i][7])
+    for i in range(1,5):
+        T_2_value.append(C[i][7])
+    key_2 = str(T_2_value)
+    if( not (key_2 in T) ):
+        T[key_2] = ([],[val])
+    else:
+        T[key_2][1].append(val)
 
-            for i in range(1, 5):
-                B[i][15] = val[i - 1]
+def test(tryingToGuess, A, B, C, H_cur, H_next):
+    for value in tryingToGuess:
+        print(value)
+        C[1][15] = value[0]
+        for i in range(1, 5):
+                B[i][15] = value[5 - i]
 
-            T = {} # key: (B[1][7]-B[4][7], C[1][7]-C[4][7]), value: ["a"/"b"/"c", L/R half of message, ...] b - only Left parts result in key,
-                    #                                                                                         c - only Right parts,
-                    #                                                                                         a - left and right parts produce the key.
+        compute_A(A, H_cur, H_next, C[1][15])
+        defineRightCol_C(C, A)
 
-            B_0_values = generateAllPossibleVariants(8)
-            # B_0_values = [(1, 2, 0, 2, 3, 1, 0, 2), (0, 3, 3, 0, 1, 1, 2, 0)]
-            for val_ in B_0_values:
+        T = {}
 
-                ########## Fixing B[0][0] - B[0][7] ##########
-                for i in range(8):
-                    B[0][i] = val_[i]
+        B_0_val = generateAllPossibleVariants(8)
+        for val in B_0_val:
+            leftPart(val, A, B, C, T)
+            rightPart(val, A, B, C, T)
 
-                # Defining C[0][1] - C[0][7]
-                for i in range(8):
-                    C[0][i] = B[0][i] ^ A[0][i]
+        result = checkThisTable(T.values(),H_cur,H_next)
+        if result:
+            return checkThisTable(T.values(),H_cur,H_next)
 
-                # Computing B[1][7] - B[4][7]
-                for i in range(1, 5):
-                    t = A[i][15]
-                    for j in range(8):
-                        B[i][j] = B[i - 1][j] ^ S[t]
-                        t = B[i][j]
+def preimage(H_cur, H_next):
+    A = [[-1 for i in range(BLOCK_SIZE)] for j in range(19)]
+    B = [[-1 for i in range(BLOCK_SIZE)] for j in range(5)]
+    C = [[-1 for i in range(BLOCK_SIZE)] for j in range(5)]
 
-                # Computing C[1][7] - C[4][7]
-                for i in range(1, 5):
-                    t = B[i][15]
-                    for j in range(8):
-                        C[i][j] = C[i - 1][j] ^ S[t]
-                        t = C[i][j]
+    print("Checking (C[1][15], B[4][15], B[3][15], B[2][15], B[1][15])")
 
-                # Filling in T_1
-                T_1_value = []
-                for i in range(1,5):
-                    T_1_value.append(B[i][7])
-                for i in range(1,5):
-                    T_1_value.append(C[i][7])
+    tryingToGuess = list(generateAllPossibleVariants(5))
 
-                key_1 = str(T_1_value)
+    pool = Pool(processes=3)
+    vals = tryingToGuess
+    parts = [[],[],[]]
 
-                if( not(key_1 in T) ):
-                    T[key_1] = ["b"]
-                elif( T[key_1][0] == "c" ):
-                    T[key_1][0] = "a"
-                T[key_1].append("L" + str(val_))
+    for i in range(len(vals)):
+        if i % 3 == 0:
+            parts[0].append(vals[i])
+        elif i % 3 == 1:
+            parts[1].append(vals[i])
+        else: 
+            parts[2].append(vals[i])
 
-                # print("B:")
-                # for item in B:
-                #     print(item)
-                # print()
+    hnds = []
+    for part in parts:
+        hnds.append(pool.starmap_async(test, [(part, A, B, C, H_cur, H_next)]))
 
-                # print("C:")
-                # for item in C:
-                #     print(item)
-                # print()
-                
-                ########## Fixing B[0][8] - B[0][15] ##########
-                for i in range(8, 16):
-                    B[0][i] = val_[i - 8]
+    whenToStop = [0] * len(hnds)
+    while True:
+        for hnd in hnds:
+            if hnd.ready():
+                whenToStop[hnds.index(hnd)] = 1
+                res = hnd.get() 
+                if res[0] != None: 
+                    pool.terminate()
+                    pool.join()
+                    return res[0]
+        if 0 not in whenToStop:
+            break
 
-                # Defining C[0][8] - C[0][15]
-                for i in range(8, 16):
-                    C[0][i] = B[0][i] ^ A[0][i]
-
-                # Computing B[1][7] - B[4][7]
-                for i in range(1, 5):
-                    for j in reversed(range(8, 16)):
-                        sboxValue= B[i][j] ^ B[i-1][j]
-                        B[i][j-1] = S.index(sboxValue)
-
-                # Computing C[1][7] - C[4][7]
-                for i in range(1, 5):
-                    for j in reversed(range(8, 16)):
-                        sboxValue= C[i][j] ^ C[i-1][j]
-                        C[i][j-1] = S.index(sboxValue)
-                
-                # Filling in T_2
-                T_2_value = []
-                for i in range(1,5):
-                    T_2_value.append(B[i][7])
-                for i in range(1,5):
-                    T_2_value.append(C[i][7])
-
-                key_2 = str(T_2_value)
-
-                if( not(key_2 in T) ):
-                    T[key_2] = ["c"]
-                elif (T[key_2][0] == "b"):
-                    T[key_2][0] = "a"
-                
-                T[key_2].append("R" + str(val_))
-
-                # print("B:")
-                # for item in B:
-                #     print(item)
-                # print()
-
-                # print("C:")
-                # for item in C:
-                #     print(item)
-                # print()
-
-        
-            for item in T:
-                if (T[item][0] == "a"):
-                    # print(item, T[item])
-                    result, preimage = check(T[item], H_cur, H_next)
-                    if(result):
-                        return preimage
-
-
-               
 
 if (__name__ == "__main__"):
 
@@ -283,19 +259,8 @@ if (__name__ == "__main__"):
         print(' '.join(map(str, compress(H,M))))
 
     if(mode == "preimage"):
+        start_time = time.time()
         H_cur = strToIntList(sys.argv[2])
         H_next = strToIntList(sys.argv[3])
         print(' '.join(map(str, preimage(H_cur, H_next))))
-       
-        
-        
-    
-    
-
-
-
-
-
-    
-
-    
+        print("--- %s seconds ---" % (time.time() - start_time))
